@@ -1,0 +1,56 @@
+#version 450
+
+// 16x16 threads per workgroup 
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// Input: height values as floats, size = W*H
+layout(set = 0, binding = 0) buffer HeightBuf {
+    float h[];
+} heightBuf;
+
+// Output: packed RGBA8 pixels, size = W*H (each uint = 0xAABBGGRR)
+layout(set = 0, binding = 1) buffer OutPixels {
+    uint px[];
+} outPx;
+
+layout(push_constant) uniform Push {
+    uint W;
+    uint H;
+    float strength; // controls how “steep” normals look
+} pc;
+
+uint idx(uint x, uint y) { return y * pc.W + x; }
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+
+    if (x >= pc.W || y >= pc.H) return;
+
+    // Clamp neighbor sampling (edge-safe)
+    uint xm = (x == 0) ? 0 : x - 1;
+    uint xp = (x + 1 >= pc.W) ? pc.W - 1 : x + 1;
+    uint ym = (y == 0) ? 0 : y - 1;
+    uint yp = (y + 1 >= pc.H) ? pc.H - 1 : y + 1;
+
+    float hL = heightBuf.h[idx(xm, y)];
+    float hR = heightBuf.h[idx(xp, y)];
+    float hD = heightBuf.h[idx(x, ym)];
+    float hU = heightBuf.h[idx(x, yp)];
+
+    float dx = (hR - hL) * pc.strength;
+    float dy = (hU - hD) * pc.strength;
+
+    // Normal points “up” (Y axis here is up component)
+    vec3 n = normalize(vec3(-dx, 1.0, -dy));
+
+    // Map [-1,1] -> [0,255]
+    vec3 rgb = (n * 0.5 + 0.5) * 255.0;
+    uint r = uint(clamp(rgb.x, 0.0, 255.0));
+    uint g = uint(clamp(rgb.y, 0.0, 255.0));
+    uint b = uint(clamp(rgb.z, 0.0, 255.0));
+    uint a = 255u;
+
+    // Pack RGBA into uint (little-endian-friendly for later)
+    outPx.px[idx(x, y)] = (a << 24) | (b << 16) | (g << 8) | r;
+}

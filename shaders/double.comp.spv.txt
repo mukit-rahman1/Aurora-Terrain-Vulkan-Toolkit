@@ -1,0 +1,91 @@
+; SPIR-V
+; Version: 1.0
+; Generator: Khronos Glslang Reference Front End; 11
+; Bound: 50
+; Schema: 0
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "main" %gl_GlobalInvocationID
+               OpExecutionMode %main LocalSize 256 1 1
+               OpSource GLSL 450
+               OpName %main "main"
+               OpName %i "i"
+               OpName %gl_GlobalInvocationID "gl_GlobalInvocationID"
+               OpName %Push "Push"
+               OpMemberName %Push 0 "n"
+               OpName %pc "pc"
+               OpName %OutBuf "OutBuf"
+               OpMemberName %OutBuf 0 "data"
+               OpName %outbuf "outbuf"
+               OpName %InBuf "InBuf"
+               OpMemberName %InBuf 0 "data"
+               OpName %inbuf "inbuf"
+               OpDecorate %gl_GlobalInvocationID BuiltIn GlobalInvocationId
+               OpDecorate %Push Block
+               OpMemberDecorate %Push 0 Offset 0
+               OpDecorate %_runtimearr_float ArrayStride 4
+               OpDecorate %OutBuf BufferBlock
+               OpMemberDecorate %OutBuf 0 Offset 0
+               OpDecorate %outbuf Binding 1
+               OpDecorate %outbuf DescriptorSet 0
+               OpDecorate %_runtimearr_float_0 ArrayStride 4
+               OpDecorate %InBuf BufferBlock
+               OpMemberDecorate %InBuf 0 Offset 0
+               OpDecorate %inbuf Binding 0
+               OpDecorate %inbuf DescriptorSet 0
+               OpDecorate %gl_WorkGroupSize BuiltIn WorkgroupSize
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+       %uint = OpTypeInt 32 0
+%_ptr_Function_uint = OpTypePointer Function %uint
+     %v3uint = OpTypeVector %uint 3
+%_ptr_Input_v3uint = OpTypePointer Input %v3uint
+%gl_GlobalInvocationID = OpVariable %_ptr_Input_v3uint Input
+     %uint_0 = OpConstant %uint 0
+%_ptr_Input_uint = OpTypePointer Input %uint
+       %Push = OpTypeStruct %uint
+%_ptr_PushConstant_Push = OpTypePointer PushConstant %Push
+         %pc = OpVariable %_ptr_PushConstant_Push PushConstant
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+%_ptr_PushConstant_uint = OpTypePointer PushConstant %uint
+       %bool = OpTypeBool
+      %float = OpTypeFloat 32
+%_runtimearr_float = OpTypeRuntimeArray %float
+     %OutBuf = OpTypeStruct %_runtimearr_float
+%_ptr_Uniform_OutBuf = OpTypePointer Uniform %OutBuf
+     %outbuf = OpVariable %_ptr_Uniform_OutBuf Uniform
+%_runtimearr_float_0 = OpTypeRuntimeArray %float
+      %InBuf = OpTypeStruct %_runtimearr_float_0
+%_ptr_Uniform_InBuf = OpTypePointer Uniform %InBuf
+      %inbuf = OpVariable %_ptr_Uniform_InBuf Uniform
+%_ptr_Uniform_float = OpTypePointer Uniform %float
+    %float_2 = OpConstant %float 2
+   %uint_256 = OpConstant %uint 256
+     %uint_1 = OpConstant %uint 1
+%gl_WorkGroupSize = OpConstantComposite %v3uint %uint_256 %uint_1 %uint_1
+       %main = OpFunction %void None %3
+          %5 = OpLabel
+          %i = OpVariable %_ptr_Function_uint Function
+         %14 = OpAccessChain %_ptr_Input_uint %gl_GlobalInvocationID %uint_0
+         %15 = OpLoad %uint %14
+               OpStore %i %15
+         %16 = OpLoad %uint %i
+         %23 = OpAccessChain %_ptr_PushConstant_uint %pc %int_0
+         %24 = OpLoad %uint %23
+         %26 = OpUGreaterThanEqual %bool %16 %24
+               OpSelectionMerge %28 None
+               OpBranchConditional %26 %27 %28
+         %27 = OpLabel
+               OpReturn
+         %28 = OpLabel
+         %35 = OpLoad %uint %i
+         %40 = OpLoad %uint %i
+         %42 = OpAccessChain %_ptr_Uniform_float %inbuf %int_0 %40
+         %43 = OpLoad %float %42
+         %45 = OpFMul %float %43 %float_2
+         %46 = OpAccessChain %_ptr_Uniform_float %outbuf %int_0 %35
+               OpStore %46 %45
+               OpReturn
+               OpFunctionEnd
