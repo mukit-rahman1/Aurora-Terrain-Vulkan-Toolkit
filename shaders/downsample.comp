@@ -1,0 +1,33 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) readonly buffer InTile {
+    uint inTile[];
+} inT;
+
+layout(set = 0, binding = 1) writeonly buffer OutTile {
+    uint outTile[];
+} outT;
+
+layout(push_constant) uniform PC {
+    uint inSize;    // e.g., 256,128,64,...
+} pc;
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+
+    uint outSize = pc.inSize / 2;
+    if (x >= outSize || y >= outSize) return;
+
+    uint x2 = x * 2;
+    uint y2 = y * 2;
+
+    uint i00 = (y2)     * pc.inSize + (x2);
+    uint i10 = (y2)     * pc.inSize + (x2 + 1);
+    uint i01 = (y2 + 1) * pc.inSize + (x2);
+    uint i11 = (y2 + 1) * pc.inSize + (x2 + 1);
+
+    uint sum = inT.inTile[i00] + inT.inTile[i10] + inT.inTile[i01] + inT.inTile[i11];
+    outT.outTile[y * outSize + x] = sum / 4;
+}

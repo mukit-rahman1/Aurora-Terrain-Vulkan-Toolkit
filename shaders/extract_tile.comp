@@ -1,0 +1,35 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// Full heightmap, stored as uint16 packed into uint (uint for simplicity).
+//  Store heights in a uint buffer where each element is 0..65535.
+layout(set = 0, binding = 0) readonly buffer Heightmap {
+    uint hm[];
+} heightmap;
+
+// Output tile (LOD0), size = 256*256 uints
+layout(set = 0, binding = 1) writeonly buffer TileOut {
+    uint tile[];
+} outTile;
+
+layout(push_constant) uniform PC {
+    uint hmWidth;   // full heightmap width
+    uint tileX;     // tile index in x (0..tilesX-1)
+    uint tileY;     // tile index in y
+} pc;
+
+const uint TILE_SIZE = 256;
+
+void main() {
+    uint lx = gl_GlobalInvocationID.x; // 0..255
+    uint ly = gl_GlobalInvocationID.y; // 0..255
+    if (lx >= TILE_SIZE || ly >= TILE_SIZE) return;
+
+    uint gx = pc.tileX * TILE_SIZE + lx;
+    uint gy = pc.tileY * TILE_SIZE + ly;
+
+    uint hmIndex = gy * pc.hmWidth + gx;
+    uint tileIndex = ly * TILE_SIZE + lx;
+
+    outTile.tile[tileIndex] = heightmap.hm[hmIndex];
+}
