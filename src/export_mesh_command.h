@@ -3,11 +3,14 @@
 #include <cstdint>
 
 struct ExportMeshArgs {
-    std::string inDir  = "out/world";   // expects inDir/tiles/tile_x_y/lod*.height.raw
-    std::string outDir = "out/meshes";  // where .obj files go
-    uint32_t lodCount  = 5;             // default: lod0 to lod4
-    float heightScale  = 100.0f;        // multiply normalized height by this
-    float spacing      = 1.0f;          // dx=dz=spacing 
+    std::string inDir;
+    std::string outDir;
+    uint32_t lodCount = 1;
+    float spacing = 1.0f;
+    float heightScale = 1.0f;
+
+    bool openBlender = false;
+    std::string blenderPath;   // path to blender.exe
 };
 
 int runExportMeshCommand(const ExportMeshArgs& args);

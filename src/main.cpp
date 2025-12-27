@@ -1,7 +1,6 @@
 #include "build_command.h"
 #include "vk_util.h"
 #include "export_mesh_command.h"
-#include "view_command.h"
 
 #include <vulkan/vulkan.h>
 #include <iostream>
@@ -32,22 +31,13 @@ ExportMeshArgs a;
     for (int i = 2; i < argc; i++) {
         std::string s = argv[i];
         if (s == "--in" && i + 1 < argc) a.inDir = argv[++i];
+        else if (s == "--open-blender") a.openBlender = true;
+        else if (s == "--blender" && i + 1 < argc) a.blenderPath = argv[++i];
+
         else if (s == "--out" && i + 1 < argc) a.outDir = argv[++i];
         else if (s == "--lods" && i + 1 < argc) a.lodCount = (uint32_t)std::stoul(argv[++i]);
         else if (s == "--scale" && i + 1 < argc) a.heightScale = std::stof(argv[++i]);
         else if (s == "--spacing" && i + 1 < argc) a.spacing = std::stof(argv[++i]);
-    }
-    return a;
-}
-
-//for args for viewing
-static ViewArgs parseViewArgs(int argc, char** argv) {
-    ViewArgs a;
-    for (int i = 2; i < argc; i++) {
-        std::string s = argv[i];
-        if (s == "--in" && i + 1 < argc) a.inDir = argv[++i];
-        else if (s == "--tile" && i + 2 < argc) { a.tileX = (uint32_t)std::stoul(argv[++i]); a.tileY = (uint32_t)std::stoul(argv[++i]); }
-        else if (s == "--lod" && i + 1 < argc) a.lod = (uint32_t)std::stoul(argv[++i]);
     }
     return a;
 }
@@ -66,7 +56,7 @@ int main(int argc, char** argv) {
 
     std::string cmd = argv[1];
 
-//if view or export arg
+// export arg
 if (cmd == "export_mesh") {
     ExportMeshArgs args = parseExportArgs(argc, argv);
     try {
@@ -75,12 +65,6 @@ if (cmd == "export_mesh") {
         std::cerr << "export_mesh error: " << e.what() << "\n";
         return 1;
     }
-}
-
-if (cmd == "view") {
-    ViewArgs args = parseViewArgs(argc, argv);
-    try { return runViewCommand(args); }
-    catch (const std::exception& e) { std::cerr << "view error: " << e.what() << "\n"; return 1; }
 }
 
 
@@ -179,6 +163,7 @@ if (cmd == "view") {
         return 1;
     }
 
+    
     vkDestroyDevice(device, nullptr);
     vkDestroyInstance(instance, nullptr);
     return rc;

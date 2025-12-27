@@ -27,10 +27,8 @@ add_executable(auroraterrian
   src/vk_util.cpp
   src/stb_impl.cpp
   src/export_mesh_command.cpp
-  src/view_command.cpp
 )
 
 target_link_libraries(auroraterrian PRIVATE Vulkan::Vulkan)
 target_link_libraries(auroraterrian PRIVATE Vulkan::Vulkan glfw)
 
-target_sources(auroraterrian PRIVATE src/view_command.cpp)

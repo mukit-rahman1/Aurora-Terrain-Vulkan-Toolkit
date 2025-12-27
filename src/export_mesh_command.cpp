@@ -1,5 +1,15 @@
+#ifdef _WIN32
+  #include <windows.h>
+#endif
+
 #include "export_mesh_command.h"
 
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <exception>
+#include <mutex>
+#include <thread>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -9,6 +19,72 @@
 
 static constexpr uint32_t TILE0_SIZE = 256;
 
+static void launchProcess(const std::string& cmdLine) {
+    std::vector<char> buf(cmdLine.begin(), cmdLine.end());
+    buf.push_back('\0');
+
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+
+    BOOL ok = CreateProcessA(
+        nullptr,
+        buf.data(),
+        nullptr, nullptr,
+        FALSE,
+        0,
+        nullptr,
+        nullptr,
+        &si,
+        &pi
+    );
+
+    if (!ok) {
+        DWORD err = GetLastError();
+        throw std::runtime_error("CreateProcessA failed. GetLastError=" + std::to_string(err));
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+}
+
+#ifdef _WIN32
+static void launchBlenderCreateProcess(const std::string& blenderExe,
+                                       const std::string& pyPath,
+                                       const std::string& objPath)
+{
+    // CreateProcess needs a mutable command line buffer.
+    std::string cmdLine =
+        "\"" + blenderExe + "\" --python \"" + pyPath + "\" -- \"" + objPath + "\"";
+
+    std::vector<char> buf(cmdLine.begin(), cmdLine.end());
+    buf.push_back('\0');
+
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+
+    BOOL ok = CreateProcessA(
+        nullptr,            // app name (nullptr = use cmdLine)
+        buf.data(),         // command line (mutable)
+        nullptr, nullptr,
+        FALSE,
+        0,
+        nullptr,            // env
+        nullptr,            // current dir
+        &si,
+        &pi
+    );
+
+    if (!ok) {
+        DWORD err = GetLastError();
+        throw std::runtime_error("CreateProcessA failed. GetLastError=" + std::to_string(err));
+    }
+
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+}
+#endif
+
 static void ensureDir(const std::string& path) {
     std::filesystem::create_directories(std::filesystem::path(path));
 }
@@ -16,6 +92,12 @@ static void ensureDir(const std::string& path) {
 static bool fileExists(const std::string& path) {
     return std::filesystem::exists(std::filesystem::path(path));
 }
+static void writeTextFile(const std::string& path, const std::string& text) {
+    std::ofstream o(path);
+    if (!o) throw std::runtime_error("Failed to write: " + path);
+    o << text;
+}
+
 
 static std::vector<uint16_t> readRawU16(const std::string& path, size_t count) {
     std::vector<uint16_t> data(count);
@@ -127,6 +209,64 @@ static void buildGridMeshFromHeightU16(const std::vector<uint16_t>& h,
     }
 }
 
+//Bounded Queue and job structs
+template <typename T>
+class BoundedQueue {
+public:
+    explicit BoundedQueue(size_t cap) : cap_(cap) {}
+
+    // returns false if closed (item not pushed)
+    bool push(T item) {
+        std::unique_lock<std::mutex> lk(m_);
+        cv_not_full_.wait(lk, [&]{ return closed_ || q_.size() < cap_; });
+        if (closed_) return false;
+        q_.push_back(std::move(item));
+        cv_not_empty_.notify_one();
+        return true;
+    }
+
+    // returns false when closed AND empty
+    bool pop(T& out) {
+        std::unique_lock<std::mutex> lk(m_);
+        cv_not_empty_.wait(lk, [&]{ return closed_ || !q_.empty(); });
+        if (q_.empty()) return false;
+        out = std::move(q_.front());
+        q_.pop_front();
+        cv_not_full_.notify_one();
+        return true;
+    }
+
+    void close() {
+        std::lock_guard<std::mutex> lk(m_);
+        closed_ = true;
+        cv_not_empty_.notify_all();
+        cv_not_full_.notify_all();
+    }
+
+private:
+    size_t cap_;
+    std::mutex m_;
+    std::condition_variable cv_not_empty_, cv_not_full_;
+    std::deque<T> q_;
+    bool closed_ = false;
+};
+
+struct ExportJob {
+    std::string hPath;
+    std::string outObj;
+    uint32_t N = 0;
+    float spacing = 1.0f;
+    float heightScale = 1.0f;
+    uint32_t tileX = 0, tileY = 0;
+};
+
+struct WriteJob {
+    std::string outObj;
+    std::vector<float> vertsXYZ;
+    std::vector<uint32_t> indices;
+};
+
+
 int runExportMeshCommand(const ExportMeshArgs& args) {
     const std::string tilesDir = args.inDir + "/tiles";
     if (!std::filesystem::exists(tilesDir)) {
@@ -135,42 +275,170 @@ int runExportMeshCommand(const ExportMeshArgs& args) {
 
     ensureDir(args.outDir);
 
-    std::vector<float> verts;
-    std::vector<uint32_t> idx;
+    // --- bounded buffers ---
+    BoundedQueue<ExportJob> jobQ(64);
+    BoundedQueue<WriteJob>  writeQ(64);
 
-    size_t exported = 0;
+    std::atomic<size_t> exported{0};
 
-    for (const auto& entry : std::filesystem::directory_iterator(tilesDir)) {
-        if (!entry.is_directory()) continue;
+    // --- exception capture across threads ---
+    std::mutex exM;
+    std::exception_ptr exPtr = nullptr;
+    auto setExceptionOnce = [&](std::exception_ptr ep) {
+        std::lock_guard<std::mutex> lk(exM);
+        if (!exPtr) exPtr = ep;
+    };
 
-        const std::string folderName = entry.path().filename().string();
-        uint32_t tileX = 0, tileY = 0;
-        if (!parseTileXY(folderName, tileX, tileY)) continue;
-
-        const std::string tilePath = entry.path().string();
-
-        for (uint32_t lod = 0; lod < args.lodCount; lod++) {
-            const uint32_t N = TILE0_SIZE >> lod;
-            if (N < 2) break;
-
-            const std::string hPath = tilePath + "/lod" + std::to_string(lod) + ".height.raw";
-            if (!fileExists(hPath)) continue;
-
-            // load heights
-            auto h = readRawU16(hPath, static_cast<size_t>(N) * N);
-
-            // build mesh
-            buildGridMeshFromHeightU16(h, N, args.spacing, args.heightScale,
-                                       tileX, tileY, verts, idx);
-
-            // write obj
-            const std::string outObj = args.outDir + "/" + folderName + "_lod" + std::to_string(lod) + ".obj";
-            writeOBJ(outObj, verts, idx);
-
-            exported++;
+    // --- writer thread (controlled I/O) ---
+    std::thread writer([&] {
+        try {
+            WriteJob w;
+            while (writeQ.pop(w)) {
+                writeOBJ(w.outObj, w.vertsXYZ, w.indices);
+                exported.fetch_add(1, std::memory_order_relaxed);
+            }
+        } catch (...) {
+            setExceptionOnce(std::current_exception());
+            // Stop the world so everyone can exit
+            jobQ.close();
+            writeQ.close();
         }
+    });
+
+    // --- worker threads (parallel compute) ---
+    unsigned hc = std::thread::hardware_concurrency();
+    unsigned workerCount = (hc > 1) ? (hc - 1) : 1; // leave 1 core for OS/writer
+    std::vector<std::thread> workers;
+    workers.reserve(workerCount);
+
+    for (unsigned t = 0; t < workerCount; t++) {
+        workers.emplace_back([&] {
+            try {
+                ExportJob j;
+                std::vector<float> verts;
+                std::vector<uint32_t> idx;
+
+                while (jobQ.pop(j)) {
+                    // read heights
+                    auto h = readRawU16(j.hPath, static_cast<size_t>(j.N) * j.N);
+
+                    // build mesh (CPU compute)
+                    buildGridMeshFromHeightU16(h, j.N, j.spacing, j.heightScale,
+                                               j.tileX, j.tileY, verts, idx);
+
+                    // enqueue write job (move to avoid copy)
+                    WriteJob w;
+                    w.outObj = j.outObj;
+                    w.vertsXYZ = std::move(verts);
+                    w.indices  = std::move(idx);
+
+                    if (!writeQ.push(std::move(w))) break;
+
+                    // restore vectors for reuse next loop (avoid realloc churn)
+                    verts.clear();
+                    idx.clear();
+                }
+            } catch (...) {
+                setExceptionOnce(std::current_exception());
+                jobQ.close();
+                writeQ.close();
+            }
+        });
     }
 
-    std::cout << "Exported " << exported << " OBJ files to: " << args.outDir << "\n";
+    // --- producer: enumerate jobs ---
+    try {
+        for (const auto& entry : std::filesystem::directory_iterator(tilesDir)) {
+            if (exPtr) break;               // stop if any thread failed
+            if (!entry.is_directory()) continue;
+
+            const std::string folderName = entry.path().filename().string();
+            uint32_t tileX = 0, tileY = 0;
+            if (!parseTileXY(folderName, tileX, tileY)) continue;
+
+            const std::string tilePath = entry.path().string();
+
+            for (uint32_t lod = 0; lod < args.lodCount; lod++) {
+                const uint32_t N = TILE0_SIZE >> lod;
+                if (N < 2) break;
+
+                const std::string hPath = tilePath + "/lod" + std::to_string(lod) + ".height.raw";
+                if (!fileExists(hPath)) continue;
+
+                const std::string outObj =
+                    args.outDir + "/" + folderName + "_lod" + std::to_string(lod) + ".obj";
+
+                ExportJob j;
+                j.hPath = hPath;
+                j.outObj = outObj;
+                j.N = N;
+                j.spacing = args.spacing;
+                j.heightScale = args.heightScale;
+                j.tileX = tileX;
+                j.tileY = tileY;
+
+                if (!jobQ.push(std::move(j))) break;
+            }
+        }
+    } catch (...) {
+        setExceptionOnce(std::current_exception());
+    }
+
+    // --- shutdown ---
+    jobQ.close();                 // no more jobs
+    for (auto& th : workers) th.join();
+
+    writeQ.close();               // no more writes after workers finish
+    writer.join();
+
+    // if any thread failed, rethrow it here
+    if (exPtr) std::rethrow_exception(exPtr);
+
+    std::cout << "Exported " << exported.load() << " OBJ files to: " << args.outDir << "\n";
+
+
+    // --- launch Blender  ---
+    if (args.openBlender) {
+        namespace fs = std::filesystem;
+
+        if (args.blenderPath.empty())
+            throw std::runtime_error("--open-blender set but --blender not provided");
+
+        fs::path blenderExe = fs::path(args.blenderPath);
+        fs::path pyPath = fs::absolute(fs::path(args.outDir) / "setup_scene.py");
+
+        // Pick OBJ (tile_0_0_lod0 or first .obj)
+        fs::path objPath = fs::path(args.outDir) / "tile_0_0_lod0.obj";
+        if (!fs::exists(objPath)) {
+            bool found = false;
+            for (auto& e : fs::directory_iterator(args.outDir)) {
+                if (e.is_regular_file() && e.path().extension() == ".obj") {
+                    objPath = e.path();
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) throw std::runtime_error("No .obj files found in: " + args.outDir);
+        }
+        objPath = fs::absolute(objPath);
+
+        //HARD FAIL early with clear message (instead of GetLastError=2)
+        if (!fs::exists(blenderExe))
+            throw std::runtime_error("Blender exe not found: " + blenderExe.string());
+        if (!fs::exists(pyPath))
+            throw std::runtime_error("setup_scene.py not found: " + pyPath.string());
+
+        // Build command line
+        std::string cmdLine =
+            "\"" + blenderExe.string() + "\" --python \"" + pyPath.string() + "\" -- \"" + objPath.string() + "\"";
+
+        std::cout << "Launching Blender:\n" << cmdLine << "\n";
+
+    #ifdef _WIN32
+        launchProcess(cmdLine);
+    #else
+        std::system(cmdLine.c_str());
+    #endif
+    }
     return 0;
 }
