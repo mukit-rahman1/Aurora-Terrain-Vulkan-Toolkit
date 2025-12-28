@@ -1,8 +1,0 @@
-[
-{
-  "directory": "C:/Users/Wolverine/Desktop/projs/Aurora-Terrain-Vulkan-Toolkit/build",
-  "command": "C:\\msys64\\mingw64\\bin\\g++.exe -isystem C:/VulkanSDK/1.4.335.0/Include -g -std=gnu++20 -o CMakeFiles\\auroraterrian.dir\\src\\main.cpp.obj -c C:\\Users\\Wolverine\\Desktop\\projs\\Aurora-Terrain-Vulkan-Toolkit\\src\\main.cpp",
-  "file": "C:\\Users\\Wolverine\\Desktop\\projs\\Aurora-Terrain-Vulkan-Toolkit\\src\\main.cpp",
-  "output": "CMakeFiles\\auroraterrian.dir\\src\\main.cpp.obj"
-}
-]

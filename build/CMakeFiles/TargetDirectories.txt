@@ -1,3 +1,0 @@
-C:/Users/Wolverine/Desktop/projs/Aurora-Terrain-Vulkan-Toolkit/build/CMakeFiles/auroraterrian.dir
-C:/Users/Wolverine/Desktop/projs/Aurora-Terrain-Vulkan-Toolkit/build/CMakeFiles/edit_cache.dir
-C:/Users/Wolverine/Desktop/projs/Aurora-Terrain-Vulkan-Toolkit/build/CMakeFiles/rebuild_cache.dir
