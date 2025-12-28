@@ -98,7 +98,7 @@ if (cmd == "export_mesh") {
     vkCheck(vkCreateInstance(&instInfo, nullptr, &instance), "vkCreateInstance");
 
 
-    // --- 2) find devices ---
+    // --- 2) find devices (and its info like queue) ---
     uint32_t devCount = 0;
     vkCheck(vkEnumeratePhysicalDevices(instance, &devCount, nullptr), "vkEnumeratePhysicalDevices(count)");
     if (devCount == 0) {

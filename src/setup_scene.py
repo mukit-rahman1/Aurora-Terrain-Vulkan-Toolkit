@@ -4,7 +4,7 @@ import os
 
 # Usage:
 # blender.exe --python setup_scene.py -- "<terrain.obj>" "<template.blend>" [out_blend] [out_jpg]
-
+#find and open template, assign snow grey look, few more helpers
 def args_after_double_dash():
     if "--" not in sys.argv:
         raise RuntimeError("Expected args after --")
@@ -19,11 +19,10 @@ def open_template(path):
 def _import_override():
     wm = bpy.context.window_manager
     if not wm.windows:
-        return None  # happens in true background (-b)
+        return None 
 
     win = wm.windows[0]
     screen = win.screen
-
     area = next((a for a in screen.areas if a.type == "VIEW_3D"), None)
     if area is None and screen.areas:
         area = screen.areas[0]
@@ -65,7 +64,7 @@ def import_obj(obj_path):
     return imported
 
 def make_terrain_material():
-    mat = bpy.data.materials.new("TerrainGrey")
+    mat = bpy.data.materials.new("TerrainGrey") #give grey snow mountain look
     mat.use_nodes = True
     nt = mat.node_tree
     nt.nodes.clear()
@@ -77,9 +76,10 @@ def make_terrain_material():
     nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
     return mat
 
+#assign grey snow terrain
 def assign_material(objs, mat):
     for o in objs:
-        if o.type != "MESH":
+        if o.type != "MESH": 
             continue
         if not o.data.materials:
             o.data.materials.append(mat)
@@ -127,7 +127,7 @@ def main():
 
     terrain = import_obj(obj_path)
 
-    # Optional: force a clean grey material (comment out if template already handles it)
+    # force a clean grey material
     mat = make_terrain_material()
     assign_material(terrain, mat)
 

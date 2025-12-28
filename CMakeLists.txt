@@ -25,7 +25,6 @@ add_executable(auroraterrian
   src/main.cpp
   src/build_command.cpp
   src/vk_util.cpp
-  src/stb_impl.cpp
   src/export_mesh_command.cpp
 )
 

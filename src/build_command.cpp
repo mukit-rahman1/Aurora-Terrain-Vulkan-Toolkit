@@ -12,6 +12,18 @@
 #include <vector>
 #include <cstring>
 
+/*
+build_command.cpp
+
+1) Load Heightmap (also convert 16-bit to 32-bit. makes it easier for GPU)
+2) Create Descriptor + Extract pipeline layouts. Create extract pipeline
+3) Create buffers. Put hmBuff info into GPU memory
+4) Create CMD pool and CMD buffer
+5) Tile Loop. Dispatch 16x16 work groups in parallel. 16x16 threads each workgroups. Total 65536 threads in parallel
+6) Clear
+*/
+
+//helpers
 static void loadHeightmap16(const std::string &path, uint32_t &w, uint32_t &h, std::vector<uint16_t> &out)
 {
     int iw = 0, ih = 0, c = 0;
@@ -25,13 +37,10 @@ static void loadHeightmap16(const std::string &path, uint32_t &w, uint32_t &h, s
     out.assign(img, img + (size_t)w * (size_t)h);
     stbi_image_free(img);
 }
-
-// helpers
 static void ensureDir(const std::string &path)
 {
     std::filesystem::create_directories(std::filesystem::path(path));
 }
-
 static void writeRawU16(const std::string &path, const std::vector<uint16_t> &data)
 {
     std::ofstream f(path, std::ios::binary);
@@ -43,8 +52,8 @@ static void writeRawU16(const std::string &path, const std::vector<uint16_t> &da
 // push constant structs
 struct PCExtract
 {
-    uint32_t hmWidth;
-    uint32_t tileX;
+    uint32_t hmWidth; //tell GPU how wide orignical big img is to calc where next row starts
+    uint32_t tileX;//tell gpu which exact sqr to cut
     uint32_t tileY;
 };
 
@@ -56,9 +65,9 @@ struct PCDownsample
 static constexpr uint32_t TILE_SIZE = 256;
 static constexpr uint32_t LOCAL_X = 16;
 static constexpr uint32_t LOCAL_Y = 16;
-
 static uint32_t ceilDiv(uint32_t a, uint32_t b) { return (a + b - 1) / b; }
 
+// -- Run Build Command *Parallel Computing step in stage 5
 int runBuildCommand(VkDevice device,
                     VkPhysicalDevice physicalDevice,
                     VkQueue queue,
@@ -83,47 +92,45 @@ int runBuildCommand(VkDevice device,
 
     // ---- 2) Create layouts + pipelines ----
     VkDescriptorSetLayout setLayout = makeSetLayout(device);
-
-    // push constants: PCExtract is 12 bytes, but Vulkan likes 4-byte multiples; we’ll reserve 16
+    // push constants: PCExtract is 12 bytes, so we will reseve 16 bytes
     VkPipelineLayout pipelineLayout = makePipelineLayout(device, setLayout, 16);
-
+    //tell OS theses are empty rn
     VkShaderModule modExtract = VK_NULL_HANDLE;
     VkShaderModule modDown = VK_NULL_HANDLE;
-
+    //create pipelines
     VkPipeline pipeExtract = makeComputePipeline(device, pipelineLayout,
         "../shaders/extract_tile.comp.spv", &modExtract);
-
     VkPipeline pipeDownsample = makeComputePipeline(device, pipelineLayout,
         "../shaders/downsample.comp.spv", &modDown);
 
-    // ---- 3) Create buffers (host-visible for first working version) ----
+    // ---- 2) Create buffers. Put hmBuff info into GPU memory ----
     const VkMemoryPropertyFlags hostMem =
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
     const VkDeviceSize hmBytes = sizeof(uint32_t) * (VkDeviceSize)hmW * (VkDeviceSize)hmH;
     const VkDeviceSize tileBytesMax = sizeof(uint32_t) * (VkDeviceSize)TILE_SIZE * (VkDeviceSize)TILE_SIZE;
-
+    //Giant map. Holds entire 256x256 heightmap. source
     Buffer hmBuf  = createBuffer(device, physicalDevice, hmBytes,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMem);
-
+    //Has the small 256x256 cutout 
     Buffer tileA  = createBuffer(device, physicalDevice, tileBytesMax,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMem);
-
+    //LOD downsampling from tile A. GPU reads this
     Buffer tileB  = createBuffer(device, physicalDevice, tileBytesMax,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostMem);
 
-    // upload hmU16 -> hmU32 -> hmBuf
+    // upload hmU16 -> hmU32 -> hmBuf (easier for GPU when u32)
     std::vector<uint32_t> hmU32((size_t)hmW * (size_t)hmH);
     for (size_t i = 0; i < hmU32.size(); i++) hmU32[i] = (uint32_t)hmU16[i];
 
-    {
+    {//Copy to GPU memory. Then unmap after. Block scope to make mapped local
         void* mapped = nullptr;
         vkCheck(vkMapMemory(device, hmBuf.memory, 0, hmBytes, 0, &mapped), "vkMapMemory(heightmap)");
         std::memcpy(mapped, hmU32.data(), (size_t)hmBytes);
         vkUnmapMemory(device, hmBuf.memory);
     }
 
-    // ---- 4) Descriptor pool + descriptor set ----
+    // ---- 3) Descriptor pool + descriptor set (descriptor: ptr from GPU's center to a buffer) ----
     VkDescriptorPoolSize ps{};
     ps.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     ps.descriptorCount = 2;
@@ -143,7 +150,7 @@ int runBuildCommand(VkDevice device,
 
     VkDescriptorSet set = VK_NULL_HANDLE;
     vkCheck(vkAllocateDescriptorSets(device, &ai, &set), "vkAllocateDescriptorSets");
-
+    //note: the B in inB stands for Buffer not tileB. Reused for every buffer
     auto updateSet2Buffers = [&](VkBuffer inB, VkDeviceSize inSize,
                                  VkBuffer outB, VkDeviceSize outSize)
     {
@@ -165,20 +172,19 @@ int runBuildCommand(VkDevice device,
         w[1].descriptorCount = 1;
         w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         w[1].pBufferInfo = &outInfo;
-
         vkUpdateDescriptorSets(device, 2, w, 0, nullptr);
     };
 
-    // ---- 5) Command pool + command buffer ----
+    // ---- 4) Command pool + command buffer (provide GPU to-do list) ----
     VkCommandPoolCreateInfo cpInfo{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
     cpInfo.queueFamilyIndex = computeQueueFamily;
     cpInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
 
     VkCommandPool cmdPool = VK_NULL_HANDLE;
-    vkCheck(vkCreateCommandPool(device, &cpInfo, nullptr, &cmdPool), "vkCreateCommandPool");
+    vkCheck(vkCreateCommandPool(device, &cpInfo, nullptr, &cmdPool), "vkCreateCommandPool");//get cmdPool
 
     VkCommandBufferAllocateInfo cbAlloc{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
-    cbAlloc.commandPool = cmdPool;
+    cbAlloc.commandPool = cmdPool; //set up cbAlloc
     cbAlloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cbAlloc.commandBufferCount = 1;
 
@@ -191,15 +197,15 @@ int runBuildCommand(VkDevice device,
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &cmd;
 
-    auto submitAndWait = [&]() {
+    auto submitAndWait = [&]() { //concurency
         vkCheck(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE), "vkQueueSubmit");
         vkCheck(vkQueueWaitIdle(queue), "vkQueueWaitIdle");
     };
 
-    // ---- 6) Tile loop ----
+    // ---- 5) Tile loop ----
     std::cout << "Building tiles: " << tilesX << " x " << tilesY
               << " | LODs=" << args.lodCount << " | tileSize=256\n";
-
+    //If heightmap is 256x256 then there will be 16x16 = 256  workgorups. each workgroup has 16x16 threads which mean 65536 threads
     for (uint32_t ty = 0; ty < tilesY; ty++) {
         for (uint32_t tx = 0; tx < tilesX; tx++) {
             const std::string tileDir = args.outDir + "/tiles/tile_" + std::to_string(tx) + "_" + std::to_string(ty);
@@ -210,18 +216,16 @@ int runBuildCommand(VkDevice device,
 
             PCExtract pcE{ hmW, tx, ty };
 
-            vkCheck(vkResetCommandBuffer(cmd, 0), "vkResetCommandBuffer");
+            vkCheck(vkResetCommandBuffer(cmd, 0), "vkResetCommandBuffer"); //clear and get new cmd
             vkCheck(vkBeginCommandBuffer(cmd, &beginInfo), "vkBeginCommandBuffer");
 
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeExtract);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout,
-                                    0, 1, &set, 0, nullptr);
-            vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
-                               0, sizeof(PCExtract), &pcE);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeExtract);//tell GPU with math program to run
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &set, 0, nullptr);
+            vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PCExtract), &pcE);
 
-            const uint32_t gx = ceilDiv(TILE_SIZE, LOCAL_X);
-            const uint32_t gy = ceilDiv(TILE_SIZE, LOCAL_Y);
-            vkCmdDispatch(cmd, gx, gy, 1);
+            const uint32_t gx = ceilDiv(TILE_SIZE, LOCAL_X); //see how many group will be need if one thread will cover 16 x-axis px
+            const uint32_t gy = ceilDiv(TILE_SIZE, LOCAL_Y); //see how many group will be need if one thread will cover 16 y-axis px
+            vkCmdDispatch(cmd, gx, gy, 1); //Mecha-man disbatches **parallelism stage**
 
             vkCheck(vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
             submitAndWait();
@@ -236,59 +240,11 @@ int runBuildCommand(VkDevice device,
             }
             std::vector<uint16_t> tileOutU16(tileU32.size());
             for (size_t i = 0; i < tileU32.size(); i++) tileOutU16[i] = (uint16_t)tileU32[i];
-            writeRawU16(tileDir + "/lod0.height.raw", tileOutU16);
-
-            // --- LOD1.. ---
-            uint32_t inSize = TILE_SIZE;
-            for (uint32_t lod = 1; lod < args.lodCount; lod++) {
-                if (inSize < 2) break;
-                const uint32_t outSize = inSize / 2;
-
-                const VkDeviceSize inBytes  = sizeof(uint32_t) * (VkDeviceSize)inSize  * (VkDeviceSize)inSize;
-                const VkDeviceSize outBytes = sizeof(uint32_t) * (VkDeviceSize)outSize * (VkDeviceSize)outSize;
-
-                updateSet2Buffers(tileA.buffer, inBytes, tileB.buffer, outBytes);
-
-                PCDownsample pcD{ inSize };
-
-                vkCheck(vkResetCommandBuffer(cmd, 0), "vkResetCommandBuffer");
-                vkCheck(vkBeginCommandBuffer(cmd, &beginInfo), "vkBeginCommandBuffer");
-
-                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeDownsample);
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout,
-                                        0, 1, &set, 0, nullptr);
-                vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
-                                   0, sizeof(PCDownsample), &pcD);
-
-                const uint32_t dgx = ceilDiv(outSize, LOCAL_X);
-                const uint32_t dgy = ceilDiv(outSize, LOCAL_Y);
-                vkCmdDispatch(cmd, dgx, dgy, 1);
-
-                vkCheck(vkEndCommandBuffer(cmd), "vkEndCommandBuffer");
-                submitAndWait();
-
-                // Read back tileB (outSize*outSize u32)
-                std::vector<uint32_t> lodU32(outSize * outSize);
-                {
-                    void* mapped = nullptr;
-                    vkCheck(vkMapMemory(device, tileB.memory, 0, outBytes, 0, &mapped), "vkMapMemory(tileB)");
-                    std::memcpy(lodU32.data(), mapped, (size_t)outBytes);
-                    vkUnmapMemory(device, tileB.memory);
-                }
-
-                std::vector<uint16_t> lodU16(lodU32.size());
-                for (size_t i = 0; i < lodU32.size(); i++) lodU16[i] = (uint16_t)lodU32[i];
-
-                writeRawU16(tileDir + "/lod" + std::to_string(lod) + ".height.raw", lodU16);
-
-                // swap for next lod
-                std::swap(tileA, tileB);
-                inSize = outSize;
-            }
+            writeRawU16(tileDir + "/lod0.height.raw", tileOutU16); //write to disk
         }
     }
 
-    // ---- 7) Cleanup (only what we created here) ----
+    // ---- 6) Cleanup ----
     vkDestroyCommandPool(device, cmdPool, nullptr);
     vkDestroyDescriptorPool(device, descPool, nullptr);
 
