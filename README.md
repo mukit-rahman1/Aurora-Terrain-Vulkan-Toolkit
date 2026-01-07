@@ -1,7 +1,7 @@
 # Aurora Terrain Tool
 A small terrain pipeline that takes any 16-bit 256x256 grayscale heightmap (you may get it from anywhere) and turns it into a mesh in Blender with northern lights.  
 
-The Project takes a 256x256 px heightmap and assigns it to 16x16 workgroups, each covering 16x16px. Each work group also has 16x16 threads. This means when computing in parallel, that is 65,536 threads in parallel.
+The Project takes a 256x256 px heightmap and assigns it to 16x16 workgroups, each covering 16x16px. Each workgroup also has 16x16 vulkan invocations (65,536 invocations per dispatch.)
 
 **NOTE:** I DID NOT make the model for the aurora lights and the night sky. A free template from [Kammerbild](https://www.youtube.com/@Kammerbild) was [used](https://www.patreon.com/Kammerbild).
 
