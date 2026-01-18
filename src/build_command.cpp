@@ -19,7 +19,7 @@ build_command.cpp
 2) Create Descriptor + Extract pipeline layouts. Create extract pipeline
 3) Create buffers. Put hmBuff info into GPU memory
 4) Create CMD pool and CMD buffer
-5) Tile Loop. Dispatch 16x16 work groups in parallel. 16x16 threads each workgroups. Total 65536 threads in parallel
+5) Tile Loop. Dispatch 16x16 work groups in parallel. 16x16 threads each workgroups. Total 65536 invocations.
 6) Clear
 */
 
